@@ -28,5 +28,38 @@ def setup_table():
     conn.commit()
     conn.close()
 
+def add_test_coordinate(lat,lng):
+    conn=create_connection()
+    cursor=conn.cursor()
+
+
+
+    '''new coordinate adding'''
+    cursor.execute(
+        '''
+     INSERT INTO analysis_requests(latitude,longitude)
+     VALUES(? , ?)
+''',(lat,lng)
+    )
+    conn.commit()
+    conn.close()
+
+def get_all_request():
+    conn=create_connection()
+    cursor=conn.cursor()
+
+    cursor.execute('SELECT * FROM analysis_requests')
+
+    rows=cursor.fetchall()
+
+    for row in rows:
+    
+        print(f"ID:{row[0]} | Coordinate:{row[1],row[2]} | Situation:{row[3]} | Date:{row[6]}")
+    conn.close()
+
+
 if __name__ =="__main__":
     setup_table()
+
+    add_test_coordinate(39.6992, 26.8735)
+    get_all_request()
