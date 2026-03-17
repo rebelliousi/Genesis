@@ -8,15 +8,14 @@ def create_connection():
 
 def setup_table():
     """
-    GÜN 5 GÜNCELLEMESİ: 
-    Tabloyu tüm analiz verilerini (NDVI kaybı, AI planı, Klasör yolu) 
-    saklayacak şekilde inşa eder.
+    GÜN 1-6: Tüm analiz verilerini ve metadata bilgilerini 
+    saklayacak şekilde tabloyu inşa eder.
     """
     conn = create_connection()
     cursor = conn.cursor()
 
     # Tablo yapısı: 
-    # ndvi_diff -> Bilimsel kayıp oranı (%)
+    # ndvi_diff -> Bilimsel kayıp oranı (%) (Day 5)
     # image_folder -> Resimlerin fiziksel yolu (Day 4)
     # ai_plan -> Analiz sonucu/raporu (Day 5)
     cursor.execute('''
@@ -34,13 +33,10 @@ def setup_table():
 
     conn.commit()
     conn.close()
-    print("✅ Veritabanı Altyapısı Hazır: GÜN 5 (Analiz Motoru) uyumlu.")
+    print("✅ Veritabanı Altyapısı Hazır: GÜN 6 (De-duplication) uyumlu.")
 
 def add_coordinate(lat, lng):
-    """
-    Yeni bir analiz talebi ekler ve klasör oluşturma/analiz takibi için 
-    oluşturulan benzersiz ID'yi döndürür.
-    """
+    """Yeni bir analiz talebi ekler ve ID döndürür."""
     conn = create_connection()
     cursor = conn.cursor()
 
@@ -51,19 +47,36 @@ def add_coordinate(lat, lng):
         ''', (lat, lng, "PENDING")
     )
     
-    # Yeni eklenen satırın ID'sini al (Day 4 & 5 için kritik!)
     new_id = cursor.lastrowid
-    
     conn.commit()
     conn.close()
     return new_id
 
-# --- 🚀 GÜN 5 GÜNCELLEMESİ: MERKEZİ GÜNCELLEME FONKSİYONU ---
+# --- 🚀 GÜN 6 GÜNCELLEMESİ: DE-DUPLICATION (TEKİLLEŞTİRME) ---
+def check_existing_analysis(lat, lng):
+    """
+    Alex Xu Ch.15: De-duplication (Tekilleştirme) mantığı.
+    Aynı koordinatın daha önce analiz edilip edilmediğini kontrol eder.
+    Hassasiyet: 4 ondalık basamak (yaklaşık 11 metre).
+    """
+    conn = create_connection()
+    cursor = conn.cursor()
+
+    # Koordinatları 4 basamağa yuvarlayarak veritabanında ara
+    cursor.execute('''
+        SELECT * FROM analysis_requests 
+        WHERE ROUND(latitude, 4) = ROUND(?, 4) 
+        AND ROUND(longitude, 4) = ROUND(?, 4) 
+        AND status = 'COMPLETED'
+        ORDER BY created_at DESC LIMIT 1
+    ''', (lat, lng))
+    
+    result = cursor.fetchone()
+    conn.close()
+    return result
+
 def update_analysis_results(analiz_id, ndvi_diff, ai_report, folder_path):
-    """
-    Analiz tamamlandığında; hesaplanan kaybı, raporu ve dosya yolunu 
-    tek seferde veritabanına işler ve durumu 'COMPLETED' yapar.
-    """
+    """Analiz sonuçlarını DB'ye işler ve durumu 'COMPLETED' yapar."""
     conn = create_connection()
     cursor = conn.cursor()
 
@@ -80,13 +93,12 @@ def update_analysis_results(analiz_id, ndvi_diff, ai_report, folder_path):
 
     conn.commit()
     conn.close()
-    print(f"📊 Analiz #{analiz_id} sonuçları (NDVI: %{ndvi_diff}) başarıyla arşive işlendi.")
+    print(f"📊 Analiz #{analiz_id} sonuçları arşive işlendi.")
 
 def get_all_request():
-    """Tüm talepleri en yeni en üstte olacak şekilde getirir."""
+    """Tüm talepleri getirir."""
     conn = create_connection()
     cursor = conn.cursor()
-    # Ekranda göstermek istediğimiz kolonları seçiyoruz
     cursor.execute('''
         SELECT id, latitude, longitude, status, ndvi_diff, created_at 
         FROM analysis_requests 
@@ -96,26 +108,21 @@ def get_all_request():
     conn.close()
     return rows
 
-# --- TEST VE BAŞLATMA ---
+# --- 🧪 TEST VE BAŞLATMA ---
 if __name__ == "__main__":
-    # 1. Tabloyu kur/güncelle
     setup_table()
     
-    # 2. Test: Yeni bir talep oluştur
-    print("\n--- Test İşlemi Başlıyor ---")
-    test_id = add_coordinate(39.6992, 26.8735)
-    print(f"1. Yeni talep eklendi. ID: {test_id}")
+    # GÜN 6 Testi
+    test_lat, test_lng = 39.6992, 26.8735
+    print("\n--- GÜN 6: De-duplication Testi ---")
     
-    # 3. Test: Analiz sonuçlarını simüle et (Day 5 Mantığı)
-    mock_ndvi_loss = 35.4
-    mock_report = "🟡 UYARI: Orta seviye bozulma tespit edildi."
-    mock_folder = f"data/analyses/{test_id}/"
+    # Önce kontrol et (Eğer veritabanın boşsa None döner)
+    exists = check_existing_analysis(test_lat, test_lng)
     
-    update_analysis_results(test_id, mock_ndvi_loss, mock_report, mock_folder)
-    print(f"2. Analiz sonuçları güncellendi.")
-    
-    # 4. Test: Listele
-    print("\n--- Güncel Kayıtlar ---")
-    requests = get_all_request()
-    for req in requests[:3]: # Son 3 kaydı göster
-        print(f"ID: {req[0]} | Durum: {req[3]} | Kayıp: %{req[4]}")
+    if exists:
+        print(f"✨ Kayıt bulundu! Analiz ID: {exists[0]} | Sonuç: %{exists[4]}")
+    else:
+        print("🆕 Bu koordinat daha önce analiz edilmemiş. Yeni kayıt oluşturuluyor...")
+        new_id = add_coordinate(test_lat, test_lng)
+        update_analysis_results(new_id, 42.5, "🔴 KRİTİK", f"data/analyses/{new_id}/")
+        print(f"✅ Yeni analiz tamamlandı ve kaydedildi. ID: {new_id}")
