@@ -1,9 +1,10 @@
 import ee
 import os
 import time
-import requests  # Görüntüleri internetten indirip kaydetmek için
+import requests
 from dotenv import load_dotenv
 
+# .env dosyasındaki değişkenleri yükle
 load_dotenv()
 
 # --- GOOGLE EARTH ENGINE BAŞLATMA ---
@@ -12,8 +13,68 @@ try:
 except Exception as e:
     print(f"❌ GEE Başlatılamadı: {e}")
 
+def calculate_ndvi_value(image, satellite, point):
+    """
+    GÜN 5: Belirli bir nokta için bilimsel NDVI (Yeşillik Sağlığı) değerini hesaplar.
+    Formül: (NIR - RED) / (NIR + RED)
+    """
+    if not image:
+        return 0
+    
+    try:
+        # Uydu sensör tipine göre doğru bandları eşleştir
+        if "LM02" in satellite:  # 1975 Landsat 2 (MSS)
+            nir = 'B6'
+            red = 'B5'
+        elif "LE07" in satellite:  # 2000 Landsat 7 (ETM+)
+            nir = 'SR_B4'
+            red = 'SR_B3'
+        else:  # 2024 Landsat 8 (OLI)
+            nir = 'SR_B5'
+            red = 'SR_B4'
+
+        # NDVI hesapla: (NIR - RED) / (NIR + RED)
+        ndvi_image = image.normalizedDifference([nir, red])
+        
+        # Nokta üzerindeki ortalama NDVI değerini çıkar (Reduce)
+        stats = ndvi_image.reduceRegion(
+            reducer=ee.Reducer.mean(),
+            geometry=point,
+            scale=30,
+            maxPixels=1e9
+        ).getInfo()
+        
+        # 'nd' anahtarındaki değeri döndür (Genelde 0 ile 1 arasıdır)
+        return stats.get('nd', 0)
+    except Exception as e:
+        print(f"⚠️ NDVI Hesaplama Hatası ({satellite}): {e}")
+        return 0
+
+def analyze_restoration_need(ndvi_old, ndvi_new):
+    """
+    GÜN 5: Trading mantığı (RSI gibi) kullanarak değişim analizi yapar.
+    Kayıp > %40 ise KRİTİK olarak işaretler.
+    """
+    if ndvi_old is None or ndvi_old <= 0:
+        return 0, "Yetersiz Veri"
+    
+    # Kayıp oranını hesapla
+    diff_rate = ((ndvi_old - ndvi_new) / ndvi_old) * 100
+    
+    # Durum kuralı (Thresholding)
+    if diff_rate > 40:
+        status = "🔴 KRİTİK: Ciddi Doğa Kaybı (Acil Restorasyon Şart)"
+    elif diff_rate > 15:
+        status = "🟡 UYARI: Orta Seviye Bozulma (İyileştirme Tavsiye Edilir)"
+    elif diff_rate < -5:
+        status = "🟢 BAŞARILI: Doğa Kendini Yenilemiş (Pozitif Gelişim)"
+    else:
+        status = "⚪ STABİL: Doğa Dengede"
+        
+    return round(diff_rate, 2), status
+
 def get_temporal_chunks(lat, lng):
-    """3 farklı yıla ait uydu görüntülerini çeker (Retry Mekanizması ile)"""
+    """3 farklı yıla ait uydu görüntülerini çeker (Retry Mekanizmalı)"""
     point = ee.Geometry.Point([lng, lat])
     
     years = [
@@ -45,12 +106,11 @@ def get_temporal_chunks(lat, lng):
                     "satellite": year["satellite"]
                 })
                 break
-                
             except Exception as e:
                 if attempt < max_retries - 1:
                     time.sleep(2)
                 else:
-                    results.append({"year": year["label"], "image_id": "Hata", "image": None})
+                    results.append({"year": year["label"], "image_id": "Hata", "image": None, "satellite": year["satellite"]})
     
     return results
 
@@ -59,9 +119,8 @@ def get_thumbnail_url(image, lat, lng, satellite):
     if not image: return None
     
     point = ee.Geometry.Point([lng, lat])
-    region = point.buffer(10000).bounds()
+    region = point.buffer(5000).bounds() # 5km'lik bir alan daha net analiz sağlar
     
-    # Görselleştirme ayarları (Landsat versiyonlarına göre)
     if "LM02" in satellite: # 1975
         bands = ['B6', 'B5', 'B4']; min_val, max_val = 0, 100
     elif "LE07" in satellite: # 2000
@@ -78,57 +137,51 @@ def get_thumbnail_url(image, lat, lng, satellite):
     except:
         return None
 
-# --- 📂 GÜN 4: BLOCK SERVER - DISKE KAYDETME MANTIĞI ---
 def save_image_to_disk(url, analiz_id, year_label):
-    """
-    Google'dan gelen URL'yi indirir ve 'data/analyses/ID/' klasörüne kaydeder.
-    Alex Xu Ch.15: Block Server - Veriyi fiziksel olarak bloklara ayırıp saklama.
-    """
+    """GÜN 4: Görüntüyü fiziksel diske kaydeder (Block Server)."""
     if not url: return None
     
-    # Klasör yapısını oluştur: data/analyses/1/ (Örneğin analiz ID'si 1 ise)
     base_dir = "data/analyses"
     target_dir = os.path.join(base_dir, str(analiz_id))
     
     if not os.path.exists(target_dir):
         os.makedirs(target_dir, exist_ok=True)
     
-    file_name = f"{year_label}.png"
-    file_path = os.path.join(target_dir, file_name)
+    file_path = os.path.join(target_dir, f"{year_label}.png")
     
     try:
-        # Resmi internetten indir
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, timeout=15)
         if response.status_code == 200:
             with open(file_path, 'wb') as f:
                 f.write(response.content)
-            print(f"✅ Kaydedildi: {file_path}")
             return file_path
-        else:
-            print(f"❌ İndirme hatası: HTTP {response.status_code}")
-            return None
     except Exception as e:
-        print(f"❌ Dosya kaydetme hatası: {e}")
-        return None
+        print(f"❌ Kayıt Hatası: {e}")
+    return None
 
-# --- TEST BLOĞU ---
+# --- 🧪 TEST BLOĞU (İmleç İzleği Burada Başlar) ---
 if __name__ == "__main__":
-    test_lat, test_lng = 39.6992, 26.8735
-    test_analiz_id = 101 # Deneme için bir ID veriyoruz
+    lat, lng = 39.6992, 26.8735 # Örnek koordinat
+    print(f"🚀 GÜN 5: {lat}, {lng} için NDVI Analiz Motoru Başlatılıyor...")
     
-    print(f"🚀 {test_lat}, {test_lng} için Zaman Yolculuğu Başlıyor...")
+    chunks = get_temporal_chunks(lat, lng)
+    point = ee.Geometry.Point([lng, lat])
     
-    chunks = get_temporal_chunks(test_lat, test_lng)
+    ndvi_results = {}
     
     for chunk in chunks:
         if chunk['image']:
-            # 1. URL'yi al
-            url = get_thumbnail_url(chunk['image'], test_lat, test_lng, chunk['satellite'])
+            # 1. NDVI hesapla
+            val = calculate_ndvi_value(chunk['image'], chunk['satellite'], point)
+            ndvi_results[chunk['year']] = val
+            print(f"📊 Yıl: {chunk['year']} | NDVI Değeri: {round(val, 4)}")
             
-            # 2. URL'yi fiziksel olarak diske kaydet (GÜN 4)
-            path = save_image_to_disk(url, test_analiz_id, chunk['year'])
-            
-            if path:
-                print(f"📅 Yıl: {chunk['year']} | 📂 Dosya Yolu: {path}")
-            else:
-                print(f"📅 Yıl: {chunk['year']} | ❌ Dosya kaydedilemedi.")
+            # 2. Resmi diske kaydet (Day 4 özelliği hala aktif)
+            url = get_thumbnail_url(chunk['image'], lat, lng, chunk['satellite'])
+            save_image_to_disk(url, "TEST_G5", chunk['year'])
+
+    # 3. Kıyasla (1975 vs 2024)
+    kayip, rapor = analyze_restoration_need(ndvi_results.get("1975"), ndvi_results.get("2024"))
+    print("-" * 30)
+    print(f"📉 50 Yıllık Doğa Kaybı: %{kayip}")
+    print(f"📝 Sonuç: {rapor}")
