@@ -1,25 +1,19 @@
 import ee
 import os
-import time  # Yeniden denemeler arasında beklemek için
+import time
+import requests  # Görüntüleri internetten indirip kaydetmek için
 from dotenv import load_dotenv
 
-# .env dosyasındaki değişkenleri yükle
 load_dotenv()
 
 # --- GOOGLE EARTH ENGINE BAŞLATMA ---
 try:
-    # Proje ID'sini .env dosyasından alarak başlat
     ee.Initialize(project=os.getenv("PRO_ID"))
 except Exception as e:
     print(f"❌ GEE Başlatılamadı: {e}")
 
 def get_temporal_chunks(lat, lng):
-    """
-    Belirlenen koordinat için 3 farklı zaman diliminden (1975, 2000, 2024) 
-    en temiz uydu görüntülerini çeker.
-    
-    Retry (Yeniden Deneme) mantığı: Google sunucularından yanıt gelmezse 3 kez dener.
-    """
+    """3 farklı yıla ait uydu görüntülerini çeker (Retry Mekanizması ile)"""
     point = ee.Geometry.Point([lng, lat])
     
     years = [
@@ -31,13 +25,9 @@ def get_temporal_chunks(lat, lng):
     results = []
     
     for year in years:
-        # --- 🔁 RETRY MEKANİZMASI ---
         max_retries = 3
-        success = False
-        
         for attempt in range(max_retries):
             try:
-                # GEE ImageCollection sorgusu
                 collection = (
                     ee.ImageCollection(year["satellite"])
                     .filterBounds(point)
@@ -46,7 +36,6 @@ def get_temporal_chunks(lat, lng):
                     .first()
                 )
                 
-                # getInfo() komutu internet üzerinden veri çektiği için hata riski yüksektir
                 info = collection.getInfo()
                 
                 results.append({
@@ -55,77 +44,91 @@ def get_temporal_chunks(lat, lng):
                     "image": collection,
                     "satellite": year["satellite"]
                 })
-                success = True
-                break  # Başarılı olursa deneme döngüsünden çık
+                break
                 
             except Exception as e:
-                print(f"⚠️ Hata: {year['label']} yılı için deneme {attempt + 1}/{max_retries} başarısız: {e}")
                 if attempt < max_retries - 1:
-                    time.sleep(2)  # Tekrar denemeden önce 2 saniye bekle
+                    time.sleep(2)
                 else:
-                    # 3 deneme de başarısız olursa boş sonuç dön
-                    results.append({
-                        "year": year["label"],
-                        "image_id": "Bağlantı Hatası (Sunucu yanıt vermedi)",
-                        "image": None,
-                        "satellite": year["satellite"]
-                    })
-        
+                    results.append({"year": year["label"], "image_id": "Hata", "image": None})
+    
     return results
 
-
 def get_thumbnail_url(image, lat, lng, satellite):
-    """
-    GEE Image objesini görselleştirip bir PNG URL'sine dönüştürür.
-    Retry Mekanizması: URL oluşturma başarısız olursa 3 kez dener.
-    """
-    if not image:
-        return None
-        
+    """Görüntüyü GEE üzerinden bir PNG URL'sine çevirir."""
+    if not image: return None
+    
     point = ee.Geometry.Point([lng, lat])
     region = point.buffer(10000).bounds()
     
-    # --- UYDU TİPİNE GÖRE GÖRSELLEŞTİRME AYARLARI ---
-    if "LM02" in satellite:  # 1975 Landsat 2 (MSS)
-        # MSS'de mavi bandı yoktur. Bitkileri kırmızı gösteren "False Color" kullanılır.
-        bands = ['B6', 'B5', 'B4']
-        min_val, max_val = 0, 100
+    # Görselleştirme ayarları (Landsat versiyonlarına göre)
+    if "LM02" in satellite: # 1975
+        bands = ['B6', 'B5', 'B4']; min_val, max_val = 0, 100
+    elif "LE07" in satellite: # 2000
+        bands = ['SR_B3', 'SR_B2', 'SR_B1']; min_val, max_val = 7000, 15000
+    else: # 2024
+        bands = ['SR_B4', 'SR_B3', 'SR_B2']; min_val, max_val = 7000, 15000
+
+    try:
+        url = image.getThumbURL({
+            'min': min_val, 'max': max_val, 'bands': bands,
+            'region': region, 'dimensions': 512, 'format': 'png'
+        })
+        return url
+    except:
+        return None
+
+# --- 📂 GÜN 4: BLOCK SERVER - DISKE KAYDETME MANTIĞI ---
+def save_image_to_disk(url, analiz_id, year_label):
+    """
+    Google'dan gelen URL'yi indirir ve 'data/analyses/ID/' klasörüne kaydeder.
+    Alex Xu Ch.15: Block Server - Veriyi fiziksel olarak bloklara ayırıp saklama.
+    """
+    if not url: return None
     
-    elif "LE07" in satellite:  # 2000 Landsat 7 (ETM+)
-        # Landsat 7 Gerçek Renk: B3(R), B2(G), B1(B)
-        bands = ['SR_B3', 'SR_B2', 'SR_B1']
-        min_val, max_val = 7000, 15000 
-        
-    else:  # 2024 Landsat 8 (OLI)
-        # Landsat 8 Gerçek Renk: B4(R), B3(G), B2(B)
-        bands = ['SR_B4', 'SR_B3', 'SR_B2']
-        min_val, max_val = 7000, 15000
+    # Klasör yapısını oluştur: data/analyses/1/ (Örneğin analiz ID'si 1 ise)
+    base_dir = "data/analyses"
+    target_dir = os.path.join(base_dir, str(analiz_id))
+    
+    if not os.path.exists(target_dir):
+        os.makedirs(target_dir, exist_ok=True)
+    
+    file_name = f"{year_label}.png"
+    file_path = os.path.join(target_dir, file_name)
+    
+    try:
+        # Resmi internetten indir
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            with open(file_path, 'wb') as f:
+                f.write(response.content)
+            print(f"✅ Kaydedildi: {file_path}")
+            return file_path
+        else:
+            print(f"❌ İndirme hatası: HTTP {response.status_code}")
+            return None
+    except Exception as e:
+        print(f"❌ Dosya kaydetme hatası: {e}")
+        return None
 
-    # --- 🔁 URL OLUŞTURMA RETRY MEKANİZMASI ---
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            url = image.getThumbURL({
-                'min': min_val,
-                'max': max_val,
-                'bands': bands,
-                'region': region,
-                'dimensions': 512,
-                'format': 'png'
-            })
-            return url
-        except Exception as e:
-            if attempt < max_retries - 1:
-                print(f"🔄 Thumbnail oluşturma denemesi {attempt + 1} başarısız, tekrar deneniyor...")
-                time.sleep(2)
-            else:
-                print(f"❌ Thumbnail hatası: {e}")
-                return None
-
-
+# --- TEST BLOĞU ---
 if __name__ == "__main__":
-    # Test Koordinatları: Edremit/Balıkesir civarı
-    print("🛰️ Google Earth Engine bağlantısı test ediliyor...")
-    chunks = get_temporal_chunks(39.6992, 26.8735)
+    test_lat, test_lng = 39.6992, 26.8735
+    test_analiz_id = 101 # Deneme için bir ID veriyoruz
+    
+    print(f"🚀 {test_lat}, {test_lng} için Zaman Yolculuğu Başlıyor...")
+    
+    chunks = get_temporal_chunks(test_lat, test_lng)
+    
     for chunk in chunks:
-        print(f"📅 Yıl: {chunk['year']} | 🆔 ID: {chunk['image_id']}")
+        if chunk['image']:
+            # 1. URL'yi al
+            url = get_thumbnail_url(chunk['image'], test_lat, test_lng, chunk['satellite'])
+            
+            # 2. URL'yi fiziksel olarak diske kaydet (GÜN 4)
+            path = save_image_to_disk(url, test_analiz_id, chunk['year'])
+            
+            if path:
+                print(f"📅 Yıl: {chunk['year']} | 📂 Dosya Yolu: {path}")
+            else:
+                print(f"📅 Yıl: {chunk['year']} | ❌ Dosya kaydedilemedi.")
