@@ -6,6 +6,11 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "earthengine-api>=1.7.17",
+    "folium>=0.20.0",
     "geemap>=0.37.1",
+    "pandas>=2.3.3",
     "python-dotenv>=1.2.2",
+    "requests>=2.32.5",
+    "streamlit>=1.55.0",
+    "streamlit-folium>=0.27.0",
 ]

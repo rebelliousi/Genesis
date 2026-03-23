@@ -1,3 +1,7 @@
 credentials.json
 .env
 __pycache__/
+data/
+genesis.db
+
+.venv/
