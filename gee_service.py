@@ -12,42 +12,43 @@ try:
     ee.Initialize(project=os.getenv("PRO_ID"))
 except Exception as e:
     print(f"❌ GEE Başlatılamadı: {e}")
-
-def calculate_ndvi_value(image, satellite, point):
-    """
-    GÜN 5: Belirli bir nokta için bilimsel NDVI (Yeşillik Sağlığı) değerini hesaplar.
-    Formül: (NIR - RED) / (NIR + RED)
-    """
-    if not image:
-        return 0
     
-    try:
-        # Uydu sensör tipine göre doğru bandları eşleştir
-        if "LM02" in satellite:  # 1975 Landsat 2 (MSS)
-            nir = 'B6'
-            red = 'B5'
-        elif "LE07" in satellite:  # 2000 Landsat 7 (ETM+)
-            nir = 'SR_B4'
-            red = 'SR_B3'
-        else:  # 2024 Landsat 8 (OLI)
-            nir = 'SR_B5'
-            red = 'SR_B4'
+# Uydu Parametreleri Merkezi Yönetimi (Senior Approach)
+SAT_CONFIG = {
+    "LANDSAT/LM02/C02/T2": { # 1975
+        "nir": 'B6', "red": 'B5', 
+        "vis_bands": ['B6', 'B5', 'B4'], "min": 0, "max": 100
+    },
+    "LANDSAT/LE07/C02/T1_L2": { # 2000
+        "nir": 'SR_B4', "red": 'SR_B3', 
+        "vis_bands": ['SR_B3', 'SR_B2', 'SR_B1'], "min": 7000, "max": 15000
+    },
+    "LANDSAT/LC08/C02/T1_L2": { # 2024
+        "nir": 'SR_B5', "red": 'SR_B4', 
+        "vis_bands": ['SR_B4', 'SR_B3', 'SR_B2'], "min": 7000, "max": 15000
+    }
+}
 
-        # NDVI hesapla: (NIR - RED) / (NIR + RED)
-        ndvi_image = image.normalizedDifference([nir, red])
+def calculate_ndvi_value(image, satellite_id, point):
+    if not image: return 0
+    
+    # Konfigürasyonu al
+    conf = SAT_CONFIG.get(satellite_id)
+    if not conf: return 0
+
+    try:
+        # Bandları sözlükten çek (if-else bitti!)
+        ndvi_image = image.normalizedDifference([conf['nir'], conf['red']])
         
-        # Nokta üzerindeki ortalama NDVI değerini çıkar (Reduce)
         stats = ndvi_image.reduceRegion(
             reducer=ee.Reducer.mean(),
             geometry=point,
-            scale=30,
-            maxPixels=1e9
+            scale=30
         ).getInfo()
         
-        # 'nd' anahtarındaki değeri döndür (Genelde 0 ile 1 arasıdır)
         return stats.get('nd', 0)
     except Exception as e:
-        print(f"⚠️ NDVI Hesaplama Hatası ({satellite}): {e}")
+        print(f"⚠️ NDVI Hatası ({satellite_id}): {e}")
         return 0
 
 def analyze_restoration_need(ndvi_old, ndvi_new):
