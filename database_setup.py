@@ -68,33 +68,28 @@ def check_existing_analysis(lat, lng):
     Aynı koordinatın daha önce analiz edilip edilmediğini kontrol eder.
     Hassasiyet: 4 ondalık basamak (yaklaşık 11 metre).
     """
-    conn = create_connection()
-    cursor = conn.cursor()
+    with get_db() as conn:
 
     # Koordinatları 4 basamağa yuvarlayarak veritabanında ara
-    cursor.execute('''
+     res=conn.execute('''
         SELECT * FROM analysis_requests 
         WHERE ROUND(latitude, 4) = ROUND(?, 4) 
         AND ROUND(longitude, 4) = ROUND(?, 4) 
         AND status = 'COMPLETED'
         ORDER BY created_at DESC LIMIT 1
-    ''', (lat, lng))
+    ''', (lat, lng)).fetchone()
     
-    result = cursor.fetchone()
-    conn.close()
-    return result
-
+    return dict(res) if res else None
 
 def get_all_request():
     """Tüm talepleri getirir."""
-    conn = create_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
+    with get_db() as conn:
+     conn.execute('''
         SELECT id, latitude, longitude, status, ndvi_diff, created_at 
         FROM analysis_requests 
         ORDER BY created_at DESC
     ''')
-    rows = cursor.fetchall()
+    rows = conn.fetchall()
     conn.close()
     return rows
 
