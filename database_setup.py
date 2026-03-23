@@ -1,24 +1,32 @@
 import sqlite3
 from datetime import datetime
+from contextlib import contextmanager
 
-def create_connection():
-    """Veritabanı bağlantısını oluşturur."""
+@contextmanager
+def get_db():
     conn = sqlite3.connect('genesis.db')
-    return conn
+    conn.row_factory = sqlite3.Row # Bu çok önemli! Verileri (0,1,2) diye değil 'id', 'lat' diye çekmeni sağlar.
+    try:
+        yield conn
+        conn.commit() # Her şey yolundaysa otomatik kaydet
+    except Exception as e:
+        conn.rollback() # Hata varsa yapılanları geri al (Veri güvenliği)
+        raise e
+    finally:
+        conn.close() # Ne olursa olsun bağlantıyı kapat
 
 def setup_table():
     """
     GÜN 1-6: Tüm analiz verilerini ve metadata bilgilerini 
     saklayacak şekilde tabloyu inşa eder.
     """
-    conn = create_connection()
-    cursor = conn.cursor()
+    with get_db() as conn:
 
     # Tablo yapısı: 
     # ndvi_diff -> Bilimsel kayıp oranı (%) (Day 5)
     # image_folder -> Resimlerin fiziksel yolu (Day 4)
     # ai_plan -> Analiz sonucu/raporu (Day 5)
-    cursor.execute('''
+     conn.execute('''
     CREATE TABLE IF NOT EXISTS analysis_requests(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         latitude REAL NOT NULL,
@@ -31,27 +39,28 @@ def setup_table():
     )
     ''')
 
-    conn.commit()
-    conn.close()
+  
     print("✅ Veritabanı Altyapısı Hazır: GÜN 6 (De-duplication) uyumlu.")
 
-def add_coordinate(lat, lng):
-    """Yeni bir analiz talebi ekler ve ID döndürür."""
-    conn = create_connection()
-    cursor = conn.cursor()
-
-    cursor.execute(
-        '''
-        INSERT INTO analysis_requests(latitude, longitude, status)
-        VALUES(?, ?, ?)
-        ''', (lat, lng, "PENDING")
-    )
-    
-    new_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    return new_id
-
+def save_analysis(lat, lng, status='PENDING', **kwargs):
+    """Hem yeni kayıt açar hem de mevcut kaydı günceller."""
+    with get_db() as conn:
+        # Eğer kwargs içinde 'id' varsa bu bir güncellemedir
+        if 'id' in kwargs:
+            analiz_id = kwargs.pop('id')
+            # Dinamik olarak hangi kolonlar gelirse onları UPDATE sorgusuna ekle
+            cols = ", ".join([f"{k} = ?" for k in kwargs.keys()])
+            vals = list(kwargs.values())
+            vals.append(analiz_id)
+            conn.execute(f"UPDATE analysis_requests SET {cols} WHERE id = ?", vals)
+            return analiz_id
+        else:
+            # Yeni kayıt açma (Insert)
+            cursor = conn.execute(
+                "INSERT INTO analysis_requests(latitude, longitude, status) VALUES(?, ?, ?)", 
+                (lat, lng, status)
+            )
+            return cursor.lastrowid
 # --- 🚀 GÜN 6 GÜNCELLEMESİ: DE-DUPLICATION (TEKİLLEŞTİRME) ---
 def check_existing_analysis(lat, lng):
     """
@@ -75,25 +84,6 @@ def check_existing_analysis(lat, lng):
     conn.close()
     return result
 
-def update_analysis_results(analiz_id, ndvi_diff, ai_report, folder_path):
-    """Analiz sonuçlarını DB'ye işler ve durumu 'COMPLETED' yapar."""
-    conn = create_connection()
-    cursor = conn.cursor()
-
-    cursor.execute(
-        '''
-        UPDATE analysis_requests 
-        SET ndvi_diff = ?, 
-            ai_plan = ?, 
-            image_folder = ?, 
-            status = 'COMPLETED' 
-        WHERE id = ?
-        ''', (ndvi_diff, ai_report, folder_path, analiz_id)
-    )
-
-    conn.commit()
-    conn.close()
-    print(f"📊 Analiz #{analiz_id} sonuçları arşive işlendi.")
 
 def get_all_request():
     """Tüm talepleri getirir."""
