@@ -1,19 +1,10 @@
 import sqlite3
 from datetime import datetime
-from contextlib import contextmanager
 
-@contextmanager
-def get_db():
+def create_connection():
+    """Veritabanı bağlantısını oluşturur."""
     conn = sqlite3.connect('genesis.db')
-    conn.row_factory = sqlite3.Row # Bu çok önemli! Verileri (0,1,2) diye değil 'id', 'lat' diye çekmeni sağlar.
-    try:
-        yield conn
-        conn.commit() # Her şey yolundaysa otomatik kaydet
-    except Exception as e:
-        conn.rollback() # Hata varsa yapılanları geri al (Veri güvenliği)
-        raise e
-    finally:
-        conn.close() # Ne olursa olsun bağlantıyı kapat
+    return conn
 
 def setup_table():
     """
