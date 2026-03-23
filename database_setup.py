@@ -84,30 +84,12 @@ def check_existing_analysis(lat, lng):
 def get_all_request():
     """Tüm talepleri getirir."""
     with get_db() as conn:
-     conn.execute('''
-        SELECT id, latitude, longitude, status, ndvi_diff, created_at 
-        FROM analysis_requests 
-        ORDER BY created_at DESC
-    ''')
-    rows = conn.fetchall()
-    conn.close()
-    return rows
+     return conn.execute("SELECT * FROM analysis_requests ORDER BY created_at DESC").fetchall()
+   
+    
 
 # --- 🧪 TEST VE BAŞLATMA ---
 if __name__ == "__main__":
     setup_table()
     
-    # GÜN 6 Testi
-    test_lat, test_lng = 39.6992, 26.8735
-    print("\n--- GÜN 6: De-duplication Testi ---")
-    
-    # Önce kontrol et (Eğer veritabanın boşsa None döner)
-    exists = check_existing_analysis(test_lat, test_lng)
-    
-    if exists:
-        print(f"✨ Kayıt bulundu! Analiz ID: {exists[0]} | Sonuç: %{exists[4]}")
-    else:
-        print("🆕 Bu koordinat daha önce analiz edilmemiş. Yeni kayıt oluşturuluyor...")
-        new_id = add_coordinate(test_lat, test_lng)
-        update_analysis_results(new_id, 42.5, "🔴 KRİTİK", f"data/analyses/{new_id}/")
-        print(f"✅ Yeni analiz tamamlandı ve kaydedildi. ID: {new_id}")
+    print("✅ Veritabanı tablosu manuel olarak kontrol edildi/oluşturuldu.")
